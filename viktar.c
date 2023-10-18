@@ -1,3 +1,7 @@
+//Written by Max Burt
+//10/18/23
+//Viktar program, similar to tar command
+//
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
