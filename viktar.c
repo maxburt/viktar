@@ -1,5 +1,5 @@
 //Written by Max Burt
-//10/18/23
+//10/22/23
 //Viktar program, similar to tar command
 //
 #include <stdio.h>
@@ -30,7 +30,7 @@ void print_file_permission(mode_t mode);
 void print_user_name(uid_t uid);
 void print_group_name(gid_t gid);
 void print_time(struct timespec st_tim);
-const char * get_time_zone(void);
+const char * get_time_zone(const struct timespec st_time);
 void print_header_info(viktar_header_t header);
 
 //the functions that get triggered based on flags passed, (-c, -x -t, -T)
@@ -47,10 +47,15 @@ int main(int argc, char *argv[]) {
    	char * archive_file_name = NULL;	
     	char * members[argc];			//stores members passed at command line
   	int member_count = 0;
-	int flag = 0; // 1 = c, 2 = x, 3 = t, 4 = T	//number to flag translation
+	int flag = 0; // 1 = c, 2 = x, 3 = t, 4 = T	//number to flag translati
+	mode_t old_mode = 0;
+        old_mode = umask(0);
 	
 	while ((opt = getopt(argc, argv, OPTIONS)) != -1) {	// Process command-line options using getopt
 		switch (opt) {
+			case 'f':
+				archive_file_name = optarg;
+				break;
 			case 'c':
 				flag = 1;
 				break;
@@ -62,9 +67,6 @@ int main(int argc, char *argv[]) {
                 		break;
             		case 'T':
                 		flag = 4;
-                		break;
-            		case 'f':
-                		archive_file_name = optarg;
                 		break;
             		case 'h':
                 		print_help();
@@ -96,6 +98,8 @@ int main(int argc, char *argv[]) {
 	} else {
 		fprintf(stderr, "You must specify one of -c, -x, -t, or -T\n");
 	}
+
+	umask(old_mode);
 	return EXIT_SUCCESS;
 }
 
@@ -113,12 +117,10 @@ void print_help(void) {
         printf("\t\t-h\t\tdisplay this AMAZING help message\n");
 }
 
-int create_archive(const char *archive_file, char *members[], int member_count) {
+int create_archive(const char * archive_file, char * members[], int member_count) {
 	int archive_fd;
     	viktar_header_t header;
     	int idx;
-        mode_t old_mode = 0;
-        old_mode = umask(0);
 
 	if (verbose == 1) {
 		if (archive_file != NULL) fprintf(stderr, "creating archive file: \"%s\"\n", archive_file);
@@ -133,7 +135,7 @@ int create_archive(const char *archive_file, char *members[], int member_count) 
 	}
 
 	if (archive_fd == -1) {
-        	perror("Failed to create archive file");
+        	fprintf(stderr, "Failed to create archive file");
 		exit(EXIT_FAILURE);
     	}
 
@@ -141,7 +143,7 @@ int create_archive(const char *archive_file, char *members[], int member_count) 
    	write(archive_fd, VIKTAR_FILE, strlen(VIKTAR_FILE));
 	
 	//iterate over all members to be added to archive
-	for (idx = 0; idx < member_count; ++idx) {
+	for (idx = 0; idx < member_count; idx++) {
 		int member_fd;
         	struct stat member_info;
         	char buffer[BUFFER_SIZE];
@@ -153,26 +155,32 @@ int create_archive(const char *archive_file, char *members[], int member_count) 
         	member_fd = open(members[idx], O_RDONLY);
         	
 		if (member_fd == -1) {
-            		perror("Failed to open member file");
+            		fprintf(stderr, "Failed to open member file");
+			if (archive_fd != 1) close(archive_fd);
+			fflush(stdout); 
             		exit(EXIT_FAILURE);
         	}
 
 		// use fstat to get info about file, store it in member_info
 		if (fstat(member_fd, &member_info) == -1) {
-            		perror("Failed to get member file information");
+            		fprintf(stderr, "Failed to get member file information");
+			if (archive_fd != 1) close(archive_fd);
+			else fflush(stdout);
+			close(member_fd);
             		exit(EXIT_FAILURE);
         	}
 			
 		//write a viktar_header to the file
 		strncpy(header.viktar_name, members[idx], VIKTAR_MAX_FILE_NAME_LEN);
+		header.viktar_name[VIKTAR_MAX_FILE_NAME_LEN] = '\0'; // Ensure null-termination
 		header.st_mode = member_info.st_mode;
         	header.st_uid = member_info.st_uid;
         	header.st_gid = member_info.st_gid;
         	header.st_size = member_info.st_size;
-        	header.st_atim = member_info.st_atim;
+		header.st_atim = member_info.st_atim;
        	 	header.st_mtim = member_info.st_mtim;
         	header.st_ctim = member_info.st_ctim;
-
+		
 		// Write the viktar header to the archive
         	write(archive_fd, &header, sizeof(viktar_header_t));
 
@@ -180,19 +188,17 @@ int create_archive(const char *archive_file, char *members[], int member_count) 
         	while ((bytes_read = read(member_fd, buffer, BUFFER_SIZE)) > 0) {
             		write(archive_fd, buffer, bytes_read);
         	}
-
         	// Close the member file
         	close(member_fd);
     	}
     	
 	// Close the archive file
-	close(archive_fd);
-	umask(old_mode);
-
+	if (archive_fd != 1) close(archive_fd);
+        else fflush(stdout);
 	return EXIT_SUCCESS;
 }
 
-int extract_archive(const char *archive_file, char *members[], int member_count) {
+int extract_archive(const char * archive_file, char * members[], int member_count) {
 	int archive_fd;
     	viktar_header_t header;
     	char buffer[BUFSIZ];
@@ -205,7 +211,7 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
 		archive_fd = 0;		//set file descriptor to '0' for stdin
 	}
 	
-	if (archive_file == NULL) fprintf(stderr, "archive from stdin\n");	
+	if (archive_file == NULL) printf("archive from stdin\n");	
     	
 	if (verbose == 1 && archive_file != NULL) fprintf(stderr, "reading archive file: \"%s\"\n", archive_file);
 
@@ -216,7 +222,8 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
     	
 	if (read(archive_fd, viktar_check, sizeof(viktar_check)) != (int)sizeof(viktar_check) || strcmp(viktar_check, VIKTAR_FILE) != 0) {
         	fprintf(stderr, "Invalid archive format\n");
-        	close(archive_fd);
+		if (archive_fd != 0) close(archive_fd);
+		else fflush(stdin);
 		exit(EXIT_FAILURE);
     	}
 
@@ -233,7 +240,8 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
     		}
 		else if (header_read != sizeof(viktar_header_t)) {
         		fprintf(stderr, "Failed to read member header\n");
-        		close(archive_fd);
+        		if (archive_fd != 0) close(archive_fd);
+			else fflush(stdin);
 			exit(EXIT_FAILURE);
     		}
 		
@@ -256,12 +264,13 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
 		// If the member is to be extracted, create the member file
         	if (extract_member) {
 			off_t bytes_to_read = header.st_size;
-			int member_fd = open(header.viktar_name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+			int member_fd = open(header.viktar_name, O_WRONLY | O_CREAT | O_TRUNC, 0);
 
 			if (verbose == 1) fprintf(stderr, "\textracting file: %s from archive: %s\n", header.viktar_name, archive_file);
 			if (member_fd == -1) {
         			perror("Failed to create member file");
-        			close(archive_fd);
+        			if (archive_fd != 0) close(archive_fd);
+				else fflush(stdin);
 				exit(EXIT_FAILURE);
 			}
     			while (bytes_to_read > 0) {
@@ -274,7 +283,8 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
 				}
         			if (bytes_read <= 0) {
             				fprintf(stderr, "Failed to read member content from archive\n");
-            				close(archive_fd);
+            				if (archive_fd != 0) close(archive_fd);
+					else fflush(stdin);
             				close(member_fd);
             				return 1;
         			}
@@ -282,13 +292,13 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
 				write_result = write(member_fd, buffer, bytes_read);
         			if (write_result < 0) {
             				perror("Failed to write member content to file");
-            				close(archive_fd);
+            				if (archive_fd != 0) close(archive_fd);
+					else fflush(stdin);
             				close(member_fd);
             				return 1;
         				}
 
 		        	bytes_to_read -= write_result;
-
     			}
 
 			// Close the member file
@@ -300,50 +310,76 @@ int extract_archive(const char *archive_file, char *members[], int member_count)
             		// Skip the member content
     			if (lseek(archive_fd, header.st_size, SEEK_CUR) == -1) {
         			perror("Failed to skip member content");
-        			close(archive_fd);
+        			if (archive_fd != 0) close(archive_fd);
+				else fflush(stdin);
         			exit(EXIT_FAILURE);
     			}
             	}
         }
-    	close(archive_fd);
+
+    	if (archive_fd != 0) close(archive_fd);
+	else fflush(stdin);
 	return EXIT_SUCCESS;
 }
 
 int set_file_attributes(const char * filename, const viktar_header_t * header) {
 	struct stat st;
-     	struct utimbuf times;
-	mode_t old_mode = 0;
-        old_mode = umask(0);
+     	
+	struct timespec times[2];
 	
     	// Get the current file attributes
     	if (stat(filename, &st) == -1) {
-        	perror("Failed to get file attributes");
-		exit(EXIT_FAILURE);
+        		perror("Failed to get file attributes");
+		return -1;
     	}
 
-    	// Set the attributes to match the header
-    	st.st_mode = header->st_mode;
-    	st.st_uid = header->st_uid;
+	if (chmod(filename, header->st_mode) == -1) {
+        	perror("Failed to set file mode (permissions)");
+        	return -1; // Return an error code or use an appropriate error-handling mechanism.
+    	}
+	
+	// Set the attributes to match the header
+        st.st_mode = header->st_mode;
+
+        if (header->st_mode & S_ISUID) {
+		st.st_mode |= 04000;
+        }
+
+	st.st_uid = header->st_uid;
     	st.st_gid = header->st_gid;
     	st.st_size = header->st_size;
 
-    	// Convert struct timespec to time_t for utime
-    	times.actime = header->st_atim.tv_sec;
-    	times.modtime = header->st_mtim.tv_sec;
+	// Set the access and modification times using utimensat
+    	times[0].tv_sec = header->st_atim.tv_sec;
+    	times[0].tv_nsec = header->st_atim.tv_nsec;
+    	times[1].tv_sec = header->st_mtim.tv_sec;
+    	times[1].tv_nsec = header->st_mtim.tv_nsec;
 
-    	// Set the times using utime
-    	if (utime(filename, &times) == -1) {
+    	if (utimensat(AT_FDCWD, filename, times, 0) == -1) {
         	perror("Failed to set file times");
-		exit(EXIT_FAILURE);
+        	return -1;
     	}
 
-    	// Set the updated attributes to the file
-    	if (chmod(filename, st.st_mode) == -1) {
-        	perror("Failed to set file attributes");
-		exit(EXIT_FAILURE);
+	if (chown(filename, header->st_uid, header->st_gid) == -1) {
+       		perror("Failed to set file ownership");
+        	return -1; // Return an error code or use an appropriate error-handling mechanism.
     	}
-	umask(old_mode);
-   	return EXIT_SUCCESS;;
+
+	if (header->st_mode & S_ISUID) {
+    
+		if (chmod(filename, header->st_mode | S_ISUID) == -1) {
+        		perror("Failed to set SUID bit");
+        		return -1;
+    		}
+	}
+
+	if (header->st_mode & S_ISGID) {
+    		if (chmod(filename, header->st_mode | S_ISGID) == -1) {
+        		perror("Failed to set SGID bit");
+        		return -1;
+    		}
+	}
+   	return 0;
 }
 
 int read_table_short(const char * archive_file) {
@@ -389,8 +425,8 @@ int read_table_short(const char * archive_file) {
                 close(archive_fd);
                 exit(EXIT_FAILURE);
         }
-	if (archive_file == NULL) fprintf(stderr, "Contents of viktar file: \"stdin\"\n");
-	else fprintf(stderr, "Contents of viktar file: \"%s\"\n", archive_file);
+	if (archive_file == NULL) printf("Contents of viktar file: \"stdin\"\n");
+	else printf("Contents of viktar file: %s\n", archive_file);
 
 	while (1) {
 		//read header info and store it in header variable
@@ -434,18 +470,51 @@ void print_file_permission(mode_t mode) {
         	// Handle other file types as needed
         	printf("?");
     	}
-    	printf((mode & S_IRUSR) ? "r" : "-");
+	printf((mode & S_IRUSR) ? "r" : "-");
     	printf((mode & S_IWUSR) ? "w" : "-");
-    	printf((mode & S_IXUSR) ? "x" : "-");
-    	printf((mode & S_IRGRP) ? "r" : "-");
-    	printf((mode & S_IWGRP) ? "w" : "-");
-    	printf((mode & S_IXGRP) ? "x" : "-");
-    	printf((mode & S_IROTH) ? "r" : "-");
-    	printf((mode & S_IWOTH) ? "w" : "-");
-    	printf((mode & S_IXOTH) ? "x" : "-");
-    	printf("\n");
-}
+    	if (mode & S_IXUSR) {
+        	if (mode & S_ISUID) {
+            		printf("s");
+        	} else {
+            		printf("x");
+        	}
+    		} else {
+        		if (mode & S_ISUID) {
+            			printf("S");
+        		} else {
+            			printf("-");
+       	 		}
+    		}
 
+    		printf((mode & S_IRGRP) ? "r" : "-");
+    		printf((mode & S_IWGRP) ? "w" : "-");
+    		if (mode & S_IXGRP) {
+        	if (mode & S_ISGID) {
+            		printf("s");
+        	} else {
+            		printf("x");
+        	}
+    		} else {
+        		if (mode & S_ISGID) {
+            			printf("S");
+        		} else {
+            			printf("-");
+        		}
+    		}
+
+    		printf((mode & S_IROTH) ? "r" : "-");
+    		printf((mode & S_IWOTH) ? "w" : "-");
+    		if (mode & S_IXOTH) {
+        	if (mode & S_ISVTX) {
+            		printf("t");
+        	} else {
+            		printf("x");
+        	}
+    		} else {
+        		printf("-");
+    		}
+    		printf("\n");
+}
 //util function prints UserName
 void print_user_name(uid_t uid) {
 	struct passwd *pwd;
@@ -476,26 +545,18 @@ void print_time(struct timespec st_tim) {
 
     strftime(mtimeStr, sizeof(mtimeStr), "%Y-%m-%d %H:%M:%S", &timeInfo);
 
-    printf("%s %s\n", mtimeStr, get_time_zone());
+    printf("%s %s\n", mtimeStr, get_time_zone(st_tim));
 }
 
-// Function to get the timezone abbreviation for the current time
-const char * get_time_zone(void) {
-    time_t now;
-    struct tm tm_info;
-    char buffer[6];
+const char * get_time_zone(const struct timespec st_time) {
+	struct tm time_tm;
+	static char timezone[4]; // Make it static to avoid returning a pointer to a local variable
+    	localtime_r(&(st_time.tv_sec), &time_tm);
 
-    time(&now);
-    if (localtime_r(&now, &tm_info) == NULL) {
-        perror("localtime");
-        return "";
-    }
 
-    if (strftime(buffer, sizeof(buffer), "%Z", &tm_info) == 0) {
-        return "";
-    }
+    	strftime(timezone, sizeof(timezone), "%Z", &time_tm);
 
-    return strdup(buffer);
+    	return timezone;
 }
 
 void print_header_info(viktar_header_t header) {
@@ -533,6 +594,8 @@ int read_table_long(const char * archive_file) {
                 perror("Failed to open archive file");
                 exit(EXIT_FAILURE);
         }
+
+	if (archive_file) printf("Contents of viktar file: %s\n", archive_file);
 
         result = read(archive_fd, viktar_check, sizeof(viktar_check));
 
